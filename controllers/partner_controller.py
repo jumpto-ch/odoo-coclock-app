@@ -4,7 +4,6 @@ import logging
 from odoo import http, tools, fields
 from odoo.http import request, Response
 from odoo.exceptions import AccessDenied, UserError, ValidationError
-from odoo.tests import get_db_name
 import xmlrpc.client
 
 _logger = logging.getLogger(__name__)
@@ -96,7 +95,7 @@ class PartnerController(http.Controller):
     @http.route('/api/timesheets', auth='none', methods=['POST'], type='json')
     def create_timesheets(self, **kwargs):
         base_url = request.env['ir.config_parameter'].sudo().get_param('web.base.url')
-        database = get_db_name()
+        database = request.env.cr.dbname
 
         # Extract the 'name' parameter from the JSON payload
         data = request.httprequest.get_json()
