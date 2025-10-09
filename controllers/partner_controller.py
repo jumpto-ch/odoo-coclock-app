@@ -9,6 +9,7 @@ import xmlrpc.client
 
 _logger = logging.getLogger(__name__)
 
+
 class PartnerController(http.Controller):
 
     @http.route('/api/tasks', auth='none', methods=['GET'], type='json')
@@ -28,8 +29,13 @@ class PartnerController(http.Controller):
                 _logger.warning("DOOTIX DEBUG %r", "API key problem")
                 return {'status': 'error', 'message': "API key problem", 'code': 403}
 
+            user = request.env['res.users'].sudo().browse(user_id)
+            if not user.exists():
+                return {'status': 'error', 'message': "Invalid user", 'code': 403}
+
             # Fetching all tasks
-            tasks = request.env['project.task'].sudo().search([])
+            tasks = request.env['project.task'].with_user(user_id).sudo().search([])
+
             data = []
             for task in tasks:
                 if task.project_id:
@@ -115,7 +121,7 @@ class PartnerController(http.Controller):
                 _logger.warning("DOOTIX DEBUG %r", "API key problem")
                 return {'status': 'error', 'message': "API key problem", 'code': 403}
 
-            common = xmlrpc.client.ServerProxy('{}/xmlrpc/2/object'.format(base_url))
+            models = xmlrpc.client.ServerProxy(f'{base_url}/xmlrpc/2/object')
 
             for timesheet in timesheets:
                 email = timesheet.get('employee').get('email')
@@ -127,18 +133,19 @@ class PartnerController(http.Controller):
                 date_obj = datetime.strptime(timesheet.get('start_time'), "%Y-%m-%d")
 
                 # Search for the employee using their email
-                employee = request.env['hr.employee'].sudo().search([('work_email', '=', email), ('active', '=', True)], limit=1)
+                employee = request.env['hr.employee'].with_user(user_id).sudo().search(
+                    [('work_email', '=', email), ('active', '=', True)], limit=1)
 
                 # Check if employee exists and is active
                 if not employee:
                     _logger.warning("DOOTIX DEBUG %r", "No employee found with the given email.")
                     return {'status': 'error', 'message': "No employee found with the given email, please create the employee in Odoo before attempting a synchronisation", 'code': 404}
-                               
+
                 account_analytic_line = request.env['account.analytic.line'].sudo().search([('coclock_instance_id', '=', coclock_instance_id)],
                                                                     limit=1)
                 if not account_analytic_line:
                     # Create the timesheet entry
-                    timesheet = common.execute_kw(database, user_id, api_key, 'account.analytic.line', 'create',
+                    timesheet = models.execute_kw(database, user_id, api_key, 'account.analytic.line', 'create',
                                                   [{
                                                       'name': description,
                                                       'employee_id': employee.id,
@@ -150,17 +157,18 @@ class PartnerController(http.Controller):
                                                   }])
                 else:
                     # Update the timesheet entry
-                    timesheet_update = common.execute_kw(database, user_id, api_key, 'account.analytic.line', 'write',
-                                                  [[account_analytic_line.id],  # The ID of the timesheet to update
-                                                   {
-                                                       'name': description,
-                                                       'employee_id': employee.id,
-                                                       'date': date_obj,
-                                                       'unit_amount': duration,
-                                                       'project_id': project_id,
-                                                       'task_id': task_id,
-                                                       'coclock_instance_id': coclock_instance_id,
-                                                   }])
+                    timesheet_update = models.execute_kw(database, user_id, api_key, 'account.analytic.line', 'write',
+                                                         [[account_analytic_line.id],
+                                                          # The ID of the timesheet to update
+                                                          {
+                                                              'name': description,
+                                                              'employee_id': employee.id,
+                                                              'date': date_obj,
+                                                              'unit_amount': duration,
+                                                              'project_id': project_id,
+                                                              'task_id': task_id,
+                                                              'coclock_instance_id': coclock_instance_id,
+                                                          }])
 
                     timesheet = account_analytic_line.id
 
