@@ -11,7 +11,7 @@ _logger = logging.getLogger(__name__)
 
 class PartnerController(http.Controller):
 
-    @http.route('/api/tasks', auth='none', methods=['GET'], type='json')
+    @http.route('/api/tasks', auth='none', methods=['GET'], type='jsonrpc', csrf=False)
     def get_partners(self, **kwargs):
         try:
             # Get the API key from the Authorization header
@@ -92,14 +92,13 @@ class PartnerController(http.Controller):
             _logger.warning("DOOTIX DEBUG %r", str(e))
             return {'status': 'error', 'message': str(e), 'code': 500}
 
-    @http.route('/api/timesheets', auth='none', methods=['POST'], type='json')
+    @http.route('/api/timesheets', auth='none', methods=['POST'], type='jsonrpc')
     def create_timesheets(self, **kwargs):
         base_url = request.env['ir.config_parameter'].sudo().get_param('web.base.url')
         database = request.env.cr.dbname
 
-        # Extract the 'name' parameter from the JSON payload
+        # Extract JSON payload
         data = request.httprequest.get_json()
-        # Obtain values from your request body
         timesheets = data.get('timesheets')
         if not timesheets:
             _logger.warning("DOOTIX DEBUG %r", "Missing parameter: timesheets")
@@ -120,7 +119,10 @@ class PartnerController(http.Controller):
                 _logger.warning("DOOTIX DEBUG %r", "API key problem")
                 return {'status': 'error', 'message': "API key problem", 'code': 403}
 
-            models = xmlrpc.client.ServerProxy(f'{base_url}/xmlrpc/2/object')
+            # Use the Odoo environment directly (no XML-RPC in v19)
+            user_env = request.env(user=user_id, su=True)
+
+            created_or_updated_ids = []
 
             for timesheet in timesheets:
                 email = timesheet.get('employee').get('email')
@@ -132,7 +134,7 @@ class PartnerController(http.Controller):
                 date_obj = datetime.strptime(timesheet.get('start_time'), "%Y-%m-%d")
 
                 # Search for the employee using their email
-                employee = request.env['hr.employee'].with_user(user_id).sudo().search(
+                employee = user_env['hr.employee'].with_user(user_id).sudo().search(
                     [('work_email', '=', email), ('active', '=', True)], limit=1)
 
                 # Check if employee exists and is active
@@ -140,38 +142,29 @@ class PartnerController(http.Controller):
                     _logger.warning("DOOTIX DEBUG %r", "No employee found with the given email.")
                     return {'status': 'error', 'message': "No employee found with the given email, please create the employee in Odoo before attempting a synchronisation", 'code': 404}
 
-                account_analytic_line = request.env['account.analytic.line'].sudo().search([('coclock_instance_id', '=', coclock_instance_id)],
-                                                                    limit=1)
+                account_analytic_line = user_env['account.analytic.line'].search(
+                    [('coclock_instance_id', '=', coclock_instance_id)], limit=1
+                )
+
+                vals = {
+                    'name': description,
+                    'employee_id': employee.id,
+                    'date': date_obj,
+                    'unit_amount': duration,
+                    'project_id': project_id,
+                    'task_id': task_id,
+                    'coclock_instance_id': coclock_instance_id,
+                }
+
                 if not account_analytic_line:
-                    # Create the timesheet entry
-                    timesheet = models.execute_kw(database, user_id, api_key, 'account.analytic.line', 'create',
-                                                  [{
-                                                      'name': description,
-                                                      'employee_id': employee.id,
-                                                      'date': date_obj,
-                                                      'unit_amount': duration,
-                                                      'project_id': project_id,
-                                                      'task_id': task_id,
-                                                      'coclock_instance_id': coclock_instance_id,
-                                                  }])
+                    account_analytic_line = user_env['account.analytic.line'].create(vals)
                 else:
-                    # Update the timesheet entry
-                    timesheet_update = models.execute_kw(database, user_id, api_key, 'account.analytic.line', 'write',
-                                                         [[account_analytic_line.id],
-                                                          # The ID of the timesheet to update
-                                                          {
-                                                              'name': description,
-                                                              'employee_id': employee.id,
-                                                              'date': date_obj,
-                                                              'unit_amount': duration,
-                                                              'project_id': project_id,
-                                                              'task_id': task_id,
-                                                              'coclock_instance_id': coclock_instance_id,
-                                                          }])
+                    account_analytic_line.write(vals)
 
-                    timesheet = account_analytic_line.id
+                created_or_updated_ids.append(account_analytic_line.id)
 
-            return {'status': 'success', 'timesheets': timesheet, 'code': 200}
+            return {'status': 'success', 'timesheets': created_or_updated_ids, 'code': 200}
+
         except AccessDenied as e:
             _logger.warning("DOOTIX DEBUG %r", str(e))
             return {'status': 'error', 'message': str(e), 'code': 403}
